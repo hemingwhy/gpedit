@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+if [ $# -ne 1 ]; then
+  echo "Usage: $0 <encrypted-file.gpg>"
+  exit 1
+fi
+
+ENCRYPTED_FILE="$1"
+
+if [ ! -f "$ENCRYPTED_FILE" ]; then
+  echo "Error: File not found: $ENCRYPTED_FILE"
+  exit 1
+fi
+
+TEMPFILE="$(mktemp /tmp/decrypted.XXXXXX)"
+
+cleanup() {
+  rm -f "$TEMPFILE"
+}
+trap cleanup EXIT
+
+if ! gpg --quiet --batch --yes -o "$TEMPFILE" -d "$ENCRYPTED_FILE"; then
+  echo "Decryption failed"
+  exit 1
+fi
+
+EDITOR_CMD="${VISUAL:-${EDITOR:-nano}}"
+"$EDITOR_CMD" "$TEMPFILE"
+
+RECIPIENTS=$(gpg --batch --quiet --list-packets "$ENCRYPTED_FILE" | \
+  awk '/^:pubkey enc packet:/ {found=1} found && /keyid/ {print $NF}' | \
+  sed 's/^/--recipient /' | tr '\n' ' ')
+
+if [ -z "$RECIPIENTS" ]; then
+  echo "Error: No recipients found. Cannot re-encrypt."
+  exit 1
+fi
+
+gpg --yes --batch --quiet $RECIPIENTS -o "$ENCRYPTED_FILE" -e "$TEMPFILE"
+
+echo "$ENCRYPTED_FILE re-encrypted successfully."
