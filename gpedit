@@ -1,1 +1,63 @@
-/usr/local/bin/egp
+#!/bin/bash
+
+set -euo pipefail
+
+# Check input
+if [ $# -ne 1 ]; then
+  echo "Usage: $0 <encrypted-file.gpg>"
+  exit 1
+fi
+
+ENCRYPTED_FILE="$1"
+
+if [ ! -f "$ENCRYPTED_FILE" ]; then
+  echo "Error: File not found: $ENCRYPTED_FILE"
+  exit 1
+fi
+
+# Create temp file
+TEMPFILE="$(mktemp /tmp/decrypted.XXXXXX)"
+
+# Cleanup on exit
+cleanup() {
+  rm -f "$TEMPFILE"
+}
+trap cleanup EXIT
+
+# Decrypt to temp file
+if ! gpg --quiet --batch --yes -o "$TEMPFILE" -d "$ENCRYPTED_FILE"; then
+  echo "Decryption failed"
+  exit 1
+fi
+
+# Save pre-edit hash
+HASH_BEFORE=$(sha256sum "$TEMPFILE" | awk '{print $1}')
+
+# Launch editor
+EDITOR_CMD="${VISUAL:-${EDITOR:-nano}}"
+"$EDITOR_CMD" "$TEMPFILE"
+
+# Save post-edit hash
+HASH_AFTER=$(sha256sum "$TEMPFILE" | awk '{print $1}')
+
+# If no change, skip re-encryption
+if [ "$HASH_BEFORE" == "$HASH_AFTER" ]; then
+  echo "No changes detected. Original file left untouched."
+  exit 0
+fi
+
+# Get recipients
+RECIPIENTS=$(gpg --batch --quiet --list-packets "$ENCRYPTED_FILE" | \
+  awk '/^:pubkey enc packet:/ {found=1} found && /keyid/ {print $NF}' | \
+  sed 's/^/--recipient /' | tr '\n' ' ')
+
+if [ -z "$RECIPIENTS" ]; then
+  echo "Error: No recipients found. Cannot re-encrypt."
+  exit 1
+fi
+
+# Re-encrypt only if modified
+gpg --yes --batch --quiet $RECIPIENTS -o "$ENCRYPTED_FILE" -e "$TEMPFILE"
+
+echo "Changes saved and file re-encrypted."
+
